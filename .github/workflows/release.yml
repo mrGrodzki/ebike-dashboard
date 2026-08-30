@@ -36,6 +36,7 @@ jobs:
       - name: Build exact release with ESP-IDF 5.5.2
         shell: bash
         run: |
+          source /opt/esp/idf/export.sh
           export EBIKE_PROJECT_VER="${GITHUB_REF_NAME#v}"
           test "$(idf.py --version)" = "ESP-IDF v5.5.2"
           rm -f sdkconfig sdkconfig.old

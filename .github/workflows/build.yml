@@ -20,7 +20,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Verify toolchain
+        shell: bash
         run: |
+          source /opt/esp/idf/export.sh
           idf.py --version
           test "$(idf.py --version)" = "ESP-IDF v5.5.2"
 
@@ -33,9 +35,11 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py'
 
       - name: Build ESP32-S3 firmware
+        shell: bash
         env:
           EBIKE_PROJECT_VER: 0.10.0-dev
         run: |
+          source /opt/esp/idf/export.sh
           rm -f sdkconfig sdkconfig.old
           idf.py set-target esp32s3
           idf.py build
