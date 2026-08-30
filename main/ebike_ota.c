@@ -350,7 +350,7 @@ static esp_err_t write_firmware_bytes(firmware_http_context_t *context,
                                       const uint8_t *data, size_t length)
 {
     if (context->total + length > context->manifest->size) return ESP_ERR_INVALID_SIZE;
-    if (mbedtls_sha256_update_ret(context->sha_context, data, length) != 0) return ESP_FAIL;
+    if (mbedtls_sha256_update(context->sha_context, data, length) != 0) return ESP_FAIL;
     esp_err_t err = esp_ota_write(context->ota_handle, data, length);
     if (err != ESP_OK) return err;
     context->total += (uint32_t)length;
@@ -410,7 +410,7 @@ static esp_err_t download_and_stage(const ota_manifest_t *manifest)
 
     mbedtls_sha256_context sha_context;
     mbedtls_sha256_init(&sha_context);
-    if (err == ESP_OK && mbedtls_sha256_starts_ret(&sha_context, 0) != 0) err = ESP_FAIL;
+    if (err == ESP_OK && mbedtls_sha256_starts(&sha_context, 0) != 0) err = ESP_FAIL;
     firmware_http_context_t context = {
         .manifest = manifest,
         .ota_handle = ota_handle,
@@ -443,7 +443,7 @@ static esp_err_t download_and_stage(const ota_manifest_t *manifest)
     if (err == ESP_OK && (!context.header_validated || context.total != manifest->size)) {
         err = ESP_ERR_INVALID_SIZE;
     }
-    if (err == ESP_OK && mbedtls_sha256_finish_ret(&sha_context, calculated_hash) != 0) {
+    if (err == ESP_OK && mbedtls_sha256_finish(&sha_context, calculated_hash) != 0) {
         err = ESP_FAIL;
     }
     if (err == ESP_OK && (!decode_sha256(manifest->sha256, expected_hash) ||
