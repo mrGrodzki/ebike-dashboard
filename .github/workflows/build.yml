@@ -1,0 +1,52 @@
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Verify toolchain
+        run: |
+          idf.py --version
+          test "$(idf.py --version)" = "ESP-IDF v5.5.2"
+
+      - name: Run host protocol tests
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -Imain \
+            tests/test_vesc_can_protocol.c main/vesc_can_protocol.c -lm \
+            -o /tmp/vesc_can_test
+          /tmp/vesc_can_test
+          python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Build ESP32-S3 firmware
+        env:
+          EBIKE_PROJECT_VER: 0.10.0-dev
+        run: |
+          rm -f sdkconfig sdkconfig.old
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Package build output
+        run: python3 scripts/package_firmware.py build dist
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebike-dashboard-firmware
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error

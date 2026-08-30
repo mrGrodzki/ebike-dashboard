@@ -1,0 +1,87 @@
+name: Release stable firmware
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$version"
+          printf '%s' "$version" > /tmp/release-version
+
+      - name: Run host protocol tests
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -Imain \
+            tests/test_vesc_can_protocol.c main/vesc_can_protocol.c -lm \
+            -o /tmp/vesc_can_test
+          /tmp/vesc_can_test
+          python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Build exact release with ESP-IDF 5.5.2
+        shell: bash
+        run: |
+          export EBIKE_PROJECT_VER="${GITHUB_REF_NAME#v}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.2"
+          rm -f sdkconfig sdkconfig.old
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Package release
+        shell: bash
+        run: |
+          python3 scripts/package_firmware.py build dist
+          python3 scripts/create_manifest.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --tag "$GITHUB_REF_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --firmware dist/ebike-dashboard.bin \
+            --output dist/manifest.json
+          cd dist
+          zip -qr first-usb-flash.zip first-usb-flash
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-release
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified build
+        uses: actions/download-artifact@v5
+        with:
+          name: stable-release
+          path: release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/ebike-dashboard.bin \
+            release/manifest.json \
+            release/first-usb-flash.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "E-bike dashboard $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

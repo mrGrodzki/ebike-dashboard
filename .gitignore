@@ -1,0 +1,10 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+*.elf
+*.map
+*.log
+.vscode/settings.json
+__pycache__/
+*.py[cod]
