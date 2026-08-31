@@ -18,6 +18,7 @@
 #include "driver/i2c.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "bsp_qmi8658.h"
 
 #include "lvgl.h"
@@ -52,6 +53,9 @@
 
 #define EXAMPLE_LCD_H_RES 320
 #define EXAMPLE_LCD_V_RES 240
+#define EXAMPLE_LCD_DRAW_BUFFER_LINES 20
+#define EXAMPLE_LCD_TRANSFER_BYTES \
+    (EXAMPLE_LCD_H_RES * EXAMPLE_LCD_DRAW_BUFFER_LINES * sizeof(lv_color_t))
 #define EXAMPLE_TOUCH_NATIVE_H_RES 240
 #define EXAMPLE_TOUCH_NATIVE_V_RES 320
 
@@ -187,12 +191,14 @@ static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 void lv_port_disp_init(void)
 {
     static lv_disp_draw_buf_t draw_buf;
-    lv_color_t *buf1 = heap_caps_malloc(EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    lv_color_t *buf1 = heap_caps_malloc(EXAMPLE_LCD_TRANSFER_BYTES,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     assert(buf1);
-    lv_color_t *buf2 = heap_caps_malloc(EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    lv_color_t *buf2 = heap_caps_malloc(EXAMPLE_LCD_TRANSFER_BYTES,
+                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     assert(buf2);
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2,
-                          EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES); /*Initialize the display buffer*/
+                          EXAMPLE_LCD_H_RES * EXAMPLE_LCD_DRAW_BUFFER_LINES);
 
     /*-----------------------------------
      * Register the display in LVGL
@@ -213,7 +219,7 @@ void lv_port_disp_init(void)
     disp_drv.draw_buf = &draw_buf;
 
     /*Required for Example 3)*/
-    disp_drv.full_refresh = 1;
+    disp_drv.full_refresh = 0;
     // disp_drv.direct_mode = 1;
 
     /* Fill a memory array with a color if you have GPU.
@@ -248,7 +254,7 @@ void display_init(void)
         .miso_io_num = EXAMPLE_PIN_NUM_MISO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
+        .max_transfer_sz = EXAMPLE_LCD_TRANSFER_BYTES,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(EXAMPLE_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
     ESP_LOGI(TAG, "Install panel IO");
@@ -262,7 +268,7 @@ void display_init(void)
         .lcd_cmd_bits = EXAMPLE_LCD_CMD_BITS,
         .lcd_param_bits = EXAMPLE_LCD_PARAM_BITS,
         .spi_mode = 0,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 2,
         .on_color_trans_done = example_notify_lvgl_flush_ready,
     };
     // Attach the LCD to the SPI bus

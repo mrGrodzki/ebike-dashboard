@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,8 @@ static char s_station_ssid[33];
 static char s_station_password[65];
 static bool s_station_configured;
 static bool s_station_connected;
+static bool s_station_connecting;
+static uint8_t s_station_disconnect_reason;
 
 static void copy_string(char *destination, size_t destination_size, const char *source)
 {
@@ -73,6 +76,40 @@ static const char *ota_state_name(ebike_ota_state_t state)
     }
 }
 
+static const char *wifi_disconnect_reason_name(uint8_t reason)
+{
+    switch (reason) {
+        case WIFI_REASON_NO_AP_FOUND: return "hotspot not found";
+        case WIFI_REASON_AUTH_FAIL: return "authentication failed";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "password handshake timed out";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT: return "password handshake timed out";
+        case WIFI_REASON_ASSOC_FAIL: return "association failed";
+        case WIFI_REASON_CONNECTION_FAIL: return "connection failed";
+        case WIFI_REASON_BEACON_TIMEOUT: return "hotspot signal lost";
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+            return "hotspot security is not compatible";
+        default: return "connection rejected";
+    }
+}
+
+static const char *wifi_disconnect_hint(uint8_t reason)
+{
+    switch (reason) {
+        case WIFI_REASON_NO_AP_FOUND:
+            return "Enable the hotspot's 2.4 GHz or compatibility mode.";
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+            return "Check the hotspot password.";
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+            return "Use WPA2 or WPA2/WPA3 compatibility mode.";
+        default:
+            return "Keep the hotspot enabled and try SAVE AND CONNECT again.";
+    }
+}
+
 static bool is_csv_log_name(const char *name)
 {
     if (name == NULL || strncasecmp(name, "log", 3) != 0) return false;
@@ -109,13 +146,22 @@ static esp_err_t send_control_panel(httpd_req_t *request)
     ebike_ota_get_status(&ota);
     char escaped_ssid[160];
     char escaped_message[256];
+    char wifi_detail[256] = {0};
     html_escape(s_station_ssid, escaped_ssid, sizeof(escaped_ssid));
     html_escape(ota.message, escaped_message, sizeof(escaped_message));
+    if (!s_station_connected && s_station_disconnect_reason != 0U) {
+        snprintf(wifi_detail, sizeof(wifi_detail), "Last disconnect: %s (%u). %s",
+                 wifi_disconnect_reason_name(s_station_disconnect_reason),
+                 (unsigned)s_station_disconnect_reason,
+                 wifi_disconnect_hint(s_station_disconnect_reason));
+    } else if (s_station_connecting) {
+        copy_string(wifi_detail, sizeof(wifi_detail), "Searching for the hotspot...");
+    }
 
-    char panel[1400];
+    char panel[1800];
     snprintf(panel, sizeof(panel),
              "<h1>Internet and firmware</h1><div class=card>"
-             "<b>Internet Wi-Fi: <span class=%s>%s</span></b>"
+             "<b>Internet Wi-Fi: <span class=%s>%s</span></b><p>%s</p>"
              "<form method=post action=/wifi>"
              "<label>Network name (SSID)</label><input name=ssid maxlength=31 value=\"%s\" required>"
              "<label>Password</label><input name=password type=password maxlength=63 placeholder='leave blank to keep saved password'>"
@@ -124,7 +170,10 @@ static esp_err_t send_control_panel(httpd_req_t *request)
              "<form method=post action=/ota/check style='display:inline'><button type=submit>CHECK NOW</button></form>"
              "%s</div>",
              s_station_connected ? "ok" : "warn",
-             s_station_connected ? "connected" : (s_station_configured ? "disconnected" : "not configured"),
+             s_station_connected ? "connected" :
+                 (s_station_connecting ? "connecting" :
+                     (s_station_configured ? "disconnected" : "not configured")),
+             wifi_detail,
              escaped_ssid, ota.installed_version, ota_state_name(ota.state), escaped_message,
              ota.available_version[0] != '\0' ? "<br>Available: " : "",
              ota.available_version,
@@ -137,6 +186,11 @@ static esp_err_t send_control_panel(httpd_req_t *request)
 static esp_err_t index_handler(httpd_req_t *request)
 {
     esp_err_t result = send_page_header(request);
+    if (result != ESP_OK) return result;
+    result = send_control_panel(request);
+    if (result == ESP_OK) {
+        result = httpd_resp_sendstr_chunk(request, "<h1>CSV logs</h1>");
+    }
     if (result != ESP_OK) return result;
 
     (void)ebike_log_sync();
@@ -193,7 +247,6 @@ static esp_err_t index_handler(httpd_req_t *request)
         result = httpd_resp_sendstr_chunk(request, "<div class=empty>No CSV logs found.</div>");
     }
     ESP_LOGI(TAG, "HTTP log list: %u CSV file(s)", count);
-    if (result == ESP_OK) result = send_control_panel(request);
     if (result == ESP_OK) result = httpd_resp_sendstr_chunk(request, "</body></html>");
     if (result == ESP_OK) result = httpd_resp_send_chunk(request, NULL, 0);
     return result;
@@ -329,6 +382,8 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
     copy_string(s_station_password, sizeof(s_station_password), password);
     s_station_configured = true;
     s_station_connected = false;
+    s_station_connecting = true;
+    s_station_disconnect_reason = 0U;
     ebike_ota_notify_network(false);
     (void)esp_wifi_disconnect();
     configure_and_connect_station();
@@ -368,14 +423,21 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     (void)argument;
-    (void)event_data;
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_station_connected = true;
+        s_station_connecting = false;
+        s_station_disconnect_reason = 0U;
         ebike_ota_notify_network(true);
         ESP_LOGI(TAG, "Internet Wi-Fi connected: %s", s_station_ssid);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *disconnected = event_data;
         s_station_connected = false;
+        s_station_connecting = s_station_configured;
+        s_station_disconnect_reason = disconnected != NULL ? disconnected->reason : 0U;
         ebike_ota_notify_network(false);
+        ESP_LOGW(TAG, "Internet Wi-Fi disconnected: %s, reason=%u (%s)",
+                 s_station_ssid, (unsigned)s_station_disconnect_reason,
+                 wifi_disconnect_reason_name(s_station_disconnect_reason));
         if (s_station_configured) (void)esp_wifi_connect();
     }
 }
@@ -505,7 +567,10 @@ esp_err_t ebike_wifi_start(void)
                             "STA config failed");
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "AP start failed");
-    if (s_station_configured) (void)esp_wifi_connect();
+    if (s_station_configured) {
+        s_station_connecting = true;
+        (void)esp_wifi_connect();
+    }
 
     httpd_config_t server_config = HTTPD_DEFAULT_CONFIG();
     server_config.stack_size = 6144;
