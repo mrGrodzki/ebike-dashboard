@@ -147,7 +147,8 @@ The display always creates its own WPA2 Wi-Fi access point after boot:
 
 Open that address on a connected phone or computer to manage Wi-Fi and firmware. CSV files are on
 the separate `/logs` page so an OTA TLS handshake never competes with a large SD directory read.
-While an OTA check or installation is active, the firmware panel refreshes itself every two seconds.
+`CHECK NOW` waits for the ESP to finish the network request and then returns the page with the final
+result, instead of leaving the browser on a stale `checking` snapshot.
 CSV listing and downloads pause while an update is being checked or installed. The file currently
 being recorded is marked in green. Before a page or download is opened, the active CSV is flushed
 so completed samples are included. Downloads are read from SD in 4096-byte blocks, releasing the

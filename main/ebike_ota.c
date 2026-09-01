@@ -40,6 +40,7 @@ typedef struct {
 
 static const char *TAG = "ebike_ota";
 static SemaphoreHandle_t s_mutex;
+static SemaphoreHandle_t s_check_complete;
 static TaskHandle_t s_check_task;
 static TaskHandle_t s_install_task;
 static ebike_ota_status_t s_status;
@@ -307,6 +308,7 @@ static void check_task(void *parameter)
         }
         if (should_delay) vTaskDelay(pdMS_TO_TICKS(OTA_FIRST_CHECK_DELAY_MS));
         perform_check();
+        if (s_check_complete != NULL) xSemaphoreGive(s_check_complete);
     }
 }
 
@@ -523,6 +525,12 @@ esp_err_t ebike_ota_init(ebike_ota_event_cb_t callback, void *user_data)
     if (s_mutex != NULL) return ESP_ERR_INVALID_STATE;
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) return ESP_ERR_NO_MEM;
+    s_check_complete = xSemaphoreCreateBinary();
+    if (s_check_complete == NULL) {
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
     const esp_app_desc_t *description = esp_app_get_description();
     copy_string(s_status.installed_version, sizeof(s_status.installed_version),
                 description->version);
@@ -562,6 +570,25 @@ void ebike_ota_notify_network(bool connected)
 void ebike_ota_request_check(void)
 {
     if (s_check_task != NULL) xTaskNotifyGive(s_check_task);
+}
+
+esp_err_t ebike_ota_request_check_and_wait(uint32_t timeout_ms)
+{
+    if (s_check_task == NULL || s_check_complete == NULL) return ESP_ERR_INVALID_STATE;
+
+    bool connected = false;
+    if (xSemaphoreTake(s_mutex, portMAX_DELAY) == pdTRUE) {
+        connected = s_status.network_connected;
+        xSemaphoreGive(s_mutex);
+    }
+    if (!connected) return ESP_ERR_INVALID_STATE;
+
+    while (xSemaphoreTake(s_check_complete, 0) == pdTRUE) {
+    }
+    xTaskNotifyGive(s_check_task);
+    return xSemaphoreTake(s_check_complete, pdMS_TO_TICKS(timeout_ms)) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
 }
 
 esp_err_t ebike_ota_install(void)

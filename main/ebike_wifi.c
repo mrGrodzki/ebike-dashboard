@@ -25,6 +25,7 @@
 
 #define DOWNLOAD_BUFFER_SIZE 4096U
 #define STATION_MAX_ATTEMPTS 3U
+#define OTA_HTTP_CHECK_TIMEOUT_MS 30000U
 
 static const char *TAG = "ebike_wifi";
 static httpd_handle_t s_server;
@@ -228,14 +229,7 @@ static esp_err_t send_control_panel(httpd_req_t *request)
              ota.state == EBIKE_OTA_AVAILABLE
                  ? "<form method=post action=/ota/install style='display:inline'><button type=submit>INSTALL UPDATE</button></form>"
                  : "");
-    esp_err_t result = httpd_resp_sendstr_chunk(request, panel);
-    if (result == ESP_OK &&
-        (ota.state == EBIKE_OTA_CHECKING || ota.state == EBIKE_OTA_DOWNLOADING ||
-         ota.state == EBIKE_OTA_RESTARTING)) {
-        result = httpd_resp_sendstr_chunk(
-            request, "<script>setTimeout(function(){location.reload()},2000)</script>");
-    }
-    return result;
+    return httpd_resp_sendstr_chunk(request, panel);
 }
 
 static esp_err_t index_handler(httpd_req_t *request)
@@ -487,7 +481,16 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
 
 static esp_err_t ota_check_handler(httpd_req_t *request)
 {
-    ebike_ota_request_check();
+    esp_err_t err = ebike_ota_request_check_and_wait(OTA_HTTP_CHECK_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        httpd_resp_set_status(request, err == ESP_ERR_TIMEOUT ? "504 Gateway Timeout"
+                                                              : "409 Conflict");
+        return httpd_resp_send(
+            request,
+            err == ESP_ERR_TIMEOUT ? "Firmware check timed out"
+                                   : "Internet connection is not available",
+            HTTPD_RESP_USE_STRLEN);
+    }
     return redirect_home(request);
 }
 

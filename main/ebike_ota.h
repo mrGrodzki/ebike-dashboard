@@ -43,6 +43,7 @@ esp_err_t ebike_ota_init(ebike_ota_event_cb_t callback, void *user_data);
 esp_err_t ebike_ota_start(void);
 void ebike_ota_notify_network(bool connected);
 void ebike_ota_request_check(void);
+esp_err_t ebike_ota_request_check_and_wait(uint32_t timeout_ms);
 esp_err_t ebike_ota_install(void);
 void ebike_ota_get_status(ebike_ota_status_t *status);
 
