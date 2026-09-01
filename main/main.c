@@ -457,6 +457,17 @@ static void ota_status_changed(const ebike_ota_status_t *status, void *user_data
     lvgl_unlock();
 }
 
+static void wifi_status_changed(const ebike_wifi_status_t *status, void *user_data)
+{
+    (void)user_data;
+    if (status == NULL || status->state != EBIKE_WIFI_STATUS_SETUP_AP_RESTORED ||
+        !lvgl_lock(100)) {
+        return;
+    }
+    ebike_ui_show_ota_message("WI-FI SETUP", status->message, true);
+    lvgl_unlock();
+}
+
 static float select_longitudinal_axis(float x, float y, float z)
 {
     if (EBIKE_LONGITUDINAL_ACCEL_AXIS == 1) return y * EBIKE_LONGITUDINAL_ACCEL_SIGN;
@@ -643,7 +654,7 @@ static void controller_ui_task(void *param)
         }
 
         const uint32_t current_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-        if ((current_ms - last_log_ms) >= EBIKE_LOG_PERIOD_MS) {
+        if (snapshot.linked && (current_ms - last_log_ms) >= EBIKE_LOG_PERIOD_MS) {
             ebike_log_write(&snapshot);
             last_log_ms = current_ms;
         }
@@ -695,7 +706,7 @@ void app_main(void)
         ESP_LOGE(TAG, "CAN initialization failed: %s", esp_err_to_name(can_result));
         ESP_LOGW(TAG, "Dashboard will show NO VESC");
     }
-    esp_err_t wifi_result = ebike_wifi_start();
+    esp_err_t wifi_result = ebike_wifi_start(wifi_status_changed, NULL);
     if (wifi_result != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi log server unavailable: %s", esp_err_to_name(wifi_result));
     }

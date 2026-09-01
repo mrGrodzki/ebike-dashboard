@@ -16,6 +16,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 #include "ebike_log.h"
@@ -23,6 +24,7 @@
 #include "ebike_spi_lock.h"
 
 #define DOWNLOAD_BUFFER_SIZE 4096U
+#define STATION_MAX_ATTEMPTS 3U
 
 static const char *TAG = "ebike_wifi";
 static httpd_handle_t s_server;
@@ -31,7 +33,12 @@ static char s_station_password[65];
 static bool s_station_configured;
 static bool s_station_connected;
 static bool s_station_connecting;
+static bool s_setup_ap_only;
+static bool s_ignore_next_station_leave;
+static uint8_t s_station_attempts;
 static uint8_t s_station_disconnect_reason;
+static ebike_wifi_status_cb_t s_status_callback;
+static void *s_status_callback_user_data;
 
 static void copy_string(char *destination, size_t destination_size, const char *source)
 {
@@ -110,6 +117,39 @@ static const char *wifi_disconnect_hint(uint8_t reason)
     }
 }
 
+static void publish_wifi_status(ebike_wifi_status_state_t state, uint8_t reason,
+                                const char *message)
+{
+    if (s_status_callback == NULL) return;
+    ebike_wifi_status_t status = {
+        .state = state,
+        .disconnect_reason = reason,
+    };
+    copy_string(status.message, sizeof(status.message), message);
+    s_status_callback(&status, s_status_callback_user_data);
+}
+
+static void restore_setup_access_point(uint8_t reason)
+{
+    s_station_connected = false;
+    s_station_connecting = false;
+    s_setup_ap_only = true;
+    ebike_ota_notify_network(false);
+
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not restore setup access point: %s", esp_err_to_name(err));
+        return;
+    }
+
+    char message[160];
+    snprintf(message, sizeof(message),
+             "%s. Setup hotspot %s restored. Open 192.168.4.1 and correct the settings.",
+             wifi_disconnect_reason_name(reason), EBIKE_WIFI_SSID);
+    ESP_LOGW(TAG, "%s", message);
+    publish_wifi_status(EBIKE_WIFI_STATUS_SETUP_AP_RESTORED, reason, message);
+}
+
 static bool is_csv_log_name(const char *name)
 {
     if (name == NULL || strncasecmp(name, "log", 3) != 0) return false;
@@ -149,7 +189,14 @@ static esp_err_t send_control_panel(httpd_req_t *request)
     char wifi_detail[256] = {0};
     html_escape(s_station_ssid, escaped_ssid, sizeof(escaped_ssid));
     html_escape(ota.message, escaped_message, sizeof(escaped_message));
-    if (!s_station_connected && s_station_disconnect_reason != 0U) {
+    if (s_setup_ap_only && s_station_disconnect_reason != 0U) {
+        snprintf(wifi_detail, sizeof(wifi_detail),
+                 "Connection failed after %u attempts: %s (%u). Setup hotspot restored. %s",
+                 (unsigned)STATION_MAX_ATTEMPTS,
+                 wifi_disconnect_reason_name(s_station_disconnect_reason),
+                 (unsigned)s_station_disconnect_reason,
+                 wifi_disconnect_hint(s_station_disconnect_reason));
+    } else if (!s_station_connected && s_station_disconnect_reason != 0U) {
         snprintf(wifi_detail, sizeof(wifi_detail), "Last disconnect: %s (%u). %s",
                  wifi_disconnect_reason_name(s_station_disconnect_reason),
                  (unsigned)s_station_disconnect_reason,
@@ -171,8 +218,9 @@ static esp_err_t send_control_panel(httpd_req_t *request)
              "%s</div>",
              s_station_connected ? "ok" : "warn",
              s_station_connected ? "connected" :
-                 (s_station_connecting ? "connecting" :
-                     (s_station_configured ? "disconnected" : "not configured")),
+                 (s_setup_ap_only ? "setup hotspot restored" :
+                  (s_station_connecting ? "connecting" :
+                     (s_station_configured ? "disconnected" : "not configured"))),
              wifi_detail,
              escaped_ssid, ota.installed_version, ota_state_name(ota.state), escaped_message,
              ota.available_version[0] != '\0' ? "<br>Available: " : "",
@@ -342,8 +390,16 @@ static esp_err_t save_station_credentials(const char *ssid, const char *password
     return err;
 }
 
-static void configure_and_connect_station(void)
+static esp_err_t configure_and_connect_station(void)
 {
+    wifi_mode_t mode;
+    esp_err_t err = esp_wifi_get_mode(&mode);
+    if (err != ESP_OK) return err;
+    if (mode != WIFI_MODE_APSTA) {
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK) return err;
+    }
+
     wifi_config_t station = {0};
     copy_string((char *)station.sta.ssid, sizeof(station.sta.ssid), s_station_ssid);
     copy_string((char *)station.sta.password, sizeof(station.sta.password), s_station_password);
@@ -351,8 +407,9 @@ static void configure_and_connect_station(void)
                                          ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     station.sta.pmf_cfg.capable = true;
     station.sta.pmf_cfg.required = false;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_config(WIFI_IF_STA, &station));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
+    err = esp_wifi_set_config(WIFI_IF_STA, &station);
+    if (err != ESP_OK) return err;
+    return esp_wifi_connect();
 }
 
 static esp_err_t wifi_form_handler(httpd_req_t *request)
@@ -383,10 +440,19 @@ static esp_err_t wifi_form_handler(httpd_req_t *request)
     s_station_configured = true;
     s_station_connected = false;
     s_station_connecting = true;
+    s_setup_ap_only = false;
+    s_station_attempts = 0U;
     s_station_disconnect_reason = 0U;
     ebike_ota_notify_network(false);
-    (void)esp_wifi_disconnect();
-    configure_and_connect_station();
+    if (esp_wifi_disconnect() == ESP_OK) s_ignore_next_station_leave = true;
+    err = configure_and_connect_station();
+    if (err != ESP_OK) {
+        s_station_connecting = false;
+        restore_setup_access_point(0U);
+        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Could not start Wi-Fi connection");
+    }
+    publish_wifi_status(EBIKE_WIFI_STATUS_CONNECTING, 0U, "Connecting to internet hotspot");
     return redirect_home(request);
 }
 
@@ -426,19 +492,35 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_station_connected = true;
         s_station_connecting = false;
+        s_setup_ap_only = false;
+        s_station_attempts = 0U;
         s_station_disconnect_reason = 0U;
         ebike_ota_notify_network(true);
         ESP_LOGI(TAG, "Internet Wi-Fi connected: %s", s_station_ssid);
+        publish_wifi_status(EBIKE_WIFI_STATUS_CONNECTED, 0U,
+                            "Internet hotspot connected");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *disconnected = event_data;
+        const uint8_t reason = disconnected != NULL ? disconnected->reason : 0U;
+        if (s_ignore_next_station_leave && reason == WIFI_REASON_ASSOC_LEAVE) {
+            s_ignore_next_station_leave = false;
+            return;
+        }
+        if (s_setup_ap_only || !s_station_configured) return;
+
         s_station_connected = false;
-        s_station_connecting = s_station_configured;
-        s_station_disconnect_reason = disconnected != NULL ? disconnected->reason : 0U;
+        s_station_disconnect_reason = reason;
+        s_station_attempts++;
         ebike_ota_notify_network(false);
-        ESP_LOGW(TAG, "Internet Wi-Fi disconnected: %s, reason=%u (%s)",
-                 s_station_ssid, (unsigned)s_station_disconnect_reason,
-                 wifi_disconnect_reason_name(s_station_disconnect_reason));
-        if (s_station_configured) (void)esp_wifi_connect();
+        ESP_LOGW(TAG, "Internet Wi-Fi attempt %u/%u failed: %s, reason=%u (%s)",
+                 (unsigned)s_station_attempts, (unsigned)STATION_MAX_ATTEMPTS,
+                 s_station_ssid, (unsigned)reason, wifi_disconnect_reason_name(reason));
+        if (s_station_attempts >= STATION_MAX_ATTEMPTS) {
+            restore_setup_access_point(reason);
+        } else {
+            s_station_connecting = true;
+            (void)esp_wifi_connect();
+        }
     }
 }
 
@@ -520,9 +602,11 @@ static esp_err_t download_handler(httpd_req_t *request)
     return result;
 }
 
-esp_err_t ebike_wifi_start(void)
+esp_err_t ebike_wifi_start(ebike_wifi_status_cb_t callback, void *user_data)
 {
     if (s_server != NULL) return ESP_ERR_INVALID_STATE;
+    s_status_callback = callback;
+    s_status_callback_user_data = user_data;
 
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
@@ -569,6 +653,8 @@ esp_err_t ebike_wifi_start(void)
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "AP start failed");
     if (s_station_configured) {
         s_station_connecting = true;
+        publish_wifi_status(EBIKE_WIFI_STATUS_CONNECTING, 0U,
+                            "Connecting to saved internet hotspot");
         (void)esp_wifi_connect();
     }
 

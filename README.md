@@ -122,12 +122,15 @@ The onboard microSD slot shares SPI2 MOSI/SCLK with the display and uses a separ
 | SD CS | 41 |
 | LCD CS | 45 |
 
-Insert a FAT32-formatted card before startup. A new `log000.csv` through `log999.csv` file is
-created on every boot. Samples are written at 10 Hz and flushed every five seconds. The CSV stores
-time, VESC link state, decoded throttle percentage, motor current, battery/input current, duty
-cycle, input voltage, MOSFET temperature, motor temperature and ERPM. The dashboard reads throttle
-with the read-only `COMM_GET_DECODED_ADC` request; it does not send a throttle or motor command.
-If the card is absent or cannot mount, the rest of the dashboard continues normally.
+Insert a FAT32-formatted card before startup. Samples are written at 10 Hz only while the VESC link
+is active, so an unplugged controller does not fill the card with empty rows. Files rotate at
+32 MiB from `log000.csv` through `log999.csv`; existing logs are never deleted automatically. Free
+space is checked every minute and logging stops while preserving a 64 MiB reserve. The active file
+is flushed every five seconds. The CSV stores time, VESC link state, decoded throttle percentage,
+motor current, battery/input current, duty cycle, input voltage, MOSFET temperature, motor
+temperature and ERPM. The dashboard reads throttle with the read-only `COMM_GET_DECODED_ADC`
+request; it does not send a throttle or motor command. If the card is absent or cannot mount, the
+rest of the dashboard continues normally.
 
 The LCD and microSD share a binary bus semaphore. An LCD flush holds it until the DMA-completion
 callback, while each buffered CSV operation holds it through any resulting FATFS write. This is
@@ -150,7 +153,10 @@ screen instead of waiting for an entire file transfer. Downloading does not dele
 
 The same page now accepts home Wi-Fi or phone-hotspot credentials. The ESP operates in AP+STA mode,
 so `Ebike-Logs` remains available while the station connection supplies internet access for OTA.
-Credentials are stored only in local NVS and are not compiled into the firmware.
+Credentials are stored only in local NVS and are not compiled into the firmware. If the saved
+network, password or security mode fails three times, the station is stopped and `Ebike-Logs` is
+restored in setup-only mode. The display explains the failure and points back to `192.168.4.1`;
+saving corrected credentials starts a fresh three-attempt connection cycle.
 
 The stable manifest is read from the latest public GitHub Release. The dashboard checks product,
 hardware identifier, semantic version, exact byte count and SHA-256 before ESP-IDF validates and
