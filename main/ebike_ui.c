@@ -16,8 +16,8 @@
 #define EBIKE_POWER_MEDIUM_W     700
 #define EBIKE_POWER_HIGH_W       1300
 
-#define COLOR_BG_TOP             lv_color_hex(0x061217)
-#define COLOR_BG_BOTTOM          lv_color_hex(0x010608)
+#define COLOR_BG_TOP             lv_color_hex(0x071A2A)
+#define COLOR_BG_BOTTOM          lv_color_hex(0x020710)
 #define COLOR_TRACK              lv_color_hex(0x123038)
 #define COLOR_DIVIDER            lv_color_hex(0x17363D)
 #define COLOR_PRIMARY            lv_color_hex(0xF6FBFC)
