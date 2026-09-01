@@ -26,6 +26,7 @@
 
 #define OTA_MANIFEST_MAX_BYTES 2048U
 #define OTA_DOWNLOAD_BUFFER_BYTES 4096U
+#define OTA_HTTP_TX_BUFFER_BYTES 4096U
 #define OTA_CHECK_INTERVAL_MS (6U * 60U * 60U * 1000U)
 #define OTA_FIRST_CHECK_DELAY_MS 10000U
 
@@ -201,7 +202,8 @@ static esp_err_t manifest_http_event(esp_http_client_event_t *event)
 
 static esp_err_t fetch_manifest(ota_manifest_t *manifest)
 {
-    char *buffer = calloc(1U, OTA_MANIFEST_MAX_BYTES + 1U);
+    char *buffer = heap_caps_calloc(1U, OTA_MANIFEST_MAX_BYTES + 1U,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buffer == NULL) return ESP_ERR_NO_MEM;
     manifest_http_context_t context = {.buffer = buffer, .error = ESP_OK};
     const esp_http_client_config_t config = {
@@ -211,12 +213,15 @@ static esp_err_t fetch_manifest(ota_manifest_t *manifest)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
         .buffer_size = 1024,
+        /* GitHub release assets redirect to a long, signed CDN URL. The full
+         * request target has to fit in the HTTP transmit buffer. */
+        .buffer_size_tx = OTA_HTTP_TX_BUFFER_BYTES,
         .user_agent = "ebike-dashboard-ota/1",
         .keep_alive_enable = true,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
-        free(buffer);
+        heap_caps_free(buffer);
         return ESP_ERR_NO_MEM;
     }
 
@@ -229,7 +234,7 @@ static esp_err_t fetch_manifest(ota_manifest_t *manifest)
     if (err == ESP_OK) err = parse_manifest(buffer, manifest);
 
     esp_http_client_cleanup(client);
-    free(buffer);
+    heap_caps_free(buffer);
     return err;
 }
 
@@ -439,6 +444,7 @@ static esp_err_t download_and_stage(const ota_manifest_t *manifest)
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 20000,
         .buffer_size = OTA_DOWNLOAD_BUFFER_BYTES,
+        .buffer_size_tx = OTA_HTTP_TX_BUFFER_BYTES,
         .user_agent = "ebike-dashboard-ota/1",
         .keep_alive_enable = true,
     };

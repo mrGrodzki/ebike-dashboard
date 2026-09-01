@@ -165,7 +165,8 @@ hardware identifier, semantic version, exact byte count and SHA-256 before ESP-I
 boots the image from the inactive OTA slot. Installation is manual and is rejected while VESC
 telemetry indicates movement or material battery current. `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`
 returns to the previous slot if the new firmware cannot complete startup. Detailed setup and the
-one-time USB migration are in `docs/OTA_SETUP.md`.
+one-time USB migration are in `docs/OTA_SETUP.md`. The manifest buffer is kept in PSRAM, and the
+HTTP transmit buffer is large enough for GitHub's signed release-asset redirect URLs.
 
 Touch actions are decoded directly from raw CST816 coordinates before LVGL applies any hit testing.
 Tap the large speed area (`x=100..220`, `y=40..140`; measured centre `160,85`) to cycle
