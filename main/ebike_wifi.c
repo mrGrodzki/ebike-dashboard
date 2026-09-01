@@ -228,7 +228,14 @@ static esp_err_t send_control_panel(httpd_req_t *request)
              ota.state == EBIKE_OTA_AVAILABLE
                  ? "<form method=post action=/ota/install style='display:inline'><button type=submit>INSTALL UPDATE</button></form>"
                  : "");
-    return httpd_resp_sendstr_chunk(request, panel);
+    esp_err_t result = httpd_resp_sendstr_chunk(request, panel);
+    if (result == ESP_OK &&
+        (ota.state == EBIKE_OTA_CHECKING || ota.state == EBIKE_OTA_DOWNLOADING ||
+         ota.state == EBIKE_OTA_RESTARTING)) {
+        result = httpd_resp_sendstr_chunk(
+            request, "<script>setTimeout(function(){location.reload()},2000)</script>");
+    }
+    return result;
 }
 
 static esp_err_t index_handler(httpd_req_t *request)
