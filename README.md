@@ -145,11 +145,13 @@ The display always creates its own WPA2 Wi-Fi access point after boot:
 - password: `ebike-logs`;
 - page: `http://192.168.4.1/`.
 
-Open that address on a connected phone or computer to see every `logNNN.csv` file and download it.
-The file currently being recorded is marked in green. Before a page or download is opened, the
-active CSV is flushed so completed samples are included. Downloads are read from SD in 4096-byte
-blocks, releasing the shared SPI semaphore between blocks, so LVGL can continue refreshing the
-screen instead of waiting for an entire file transfer. Downloading does not delete or stop the log.
+Open that address on a connected phone or computer to manage Wi-Fi and firmware. CSV files are on
+the separate `/logs` page so an OTA TLS handshake never competes with a large SD directory read.
+CSV listing and downloads pause while an update is being checked or installed. The file currently
+being recorded is marked in green. Before a page or download is opened, the active CSV is flushed
+so completed samples are included. Downloads are read from SD in 4096-byte blocks, releasing the
+shared SPI semaphore between blocks, so LVGL can continue refreshing the screen instead of waiting
+for an entire file transfer. Downloading does not delete or stop the log.
 
 The same page now accepts home Wi-Fi or phone-hotspot credentials. The ESP operates in AP+STA mode,
 so `Ebike-Logs` remains available while the station connection supplies internet access for OTA.

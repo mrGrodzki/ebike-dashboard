@@ -11,6 +11,7 @@
 #include "esp_app_format.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -51,6 +52,18 @@ static void copy_string(char *destination, size_t destination_size, const char *
     if (destination == NULL || destination_size == 0U) return;
     if (source == NULL) source = "";
     snprintf(destination, destination_size, "%s", source);
+}
+
+static void log_heap_state(const char *operation)
+{
+    const size_t internal_free =
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t internal_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG, "%s heap: internal=%u largest=%u psram=%u",
+             operation, (unsigned)internal_free, (unsigned)internal_largest,
+             (unsigned)psram_free);
 }
 
 static void publish_status(void)
@@ -230,9 +243,11 @@ static void perform_check(void)
     if (!connected) return;
 
     set_state(EBIKE_OTA_CHECKING, "Checking for updates");
+    log_heap_state("Before update check");
     ota_manifest_t manifest;
     esp_err_t err = fetch_manifest(&manifest);
     if (err != ESP_OK) {
+        log_heap_state("After failed update check");
         char message[128];
         snprintf(message, sizeof(message), "Update check failed: %s", esp_err_to_name(err));
         ESP_LOGW(TAG, "%s", message);
@@ -476,8 +491,10 @@ static void install_task(void *parameter)
     }
     publish_status();
 
+    log_heap_state("Before firmware download");
     esp_err_t err = download_and_stage(&manifest);
     if (err != ESP_OK) {
+        log_heap_state("After failed firmware download");
         char message[128];
         snprintf(message, sizeof(message), "Update failed: %s", esp_err_to_name(err));
         ESP_LOGE(TAG, "%s", message);

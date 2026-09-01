@@ -176,8 +176,8 @@ static esp_err_t send_page_header(httpd_req_t *request)
         "label{display:block;color:#9eb6bc;margin:10px 0 5px}input{box-sizing:border-box;width:100%;padding:11px;border:1px solid #31515a;"
         "border-radius:8px;background:#071317;color:#eef8fa}button{padding:11px 15px;margin:12px 8px 0 0;border:0;border-radius:8px;"
         "background:#16ddf5;color:#001014;font-weight:700}.secondary{background:#27434a;color:#eef8fa}.ok{color:#39d98a}.warn{color:#ffb83d}"
-        "</style></head><body><h1>E-bike CSV logs</h1>"
-        "<p>Download a log, then open it in Excel, Google Sheets or another graphing tool.</p>");
+        "</style></head><body><h1>E-bike dashboard</h1>"
+        "<p>Manage internet Wi-Fi, firmware updates and CSV ride logs.</p>");
 }
 
 static esp_err_t send_control_panel(httpd_req_t *request)
@@ -237,9 +237,31 @@ static esp_err_t index_handler(httpd_req_t *request)
     if (result != ESP_OK) return result;
     result = send_control_panel(request);
     if (result == ESP_OK) {
-        result = httpd_resp_sendstr_chunk(request, "<h1>CSV logs</h1>");
+        result = httpd_resp_sendstr_chunk(
+            request, "<div class=card><a href='/logs'>OPEN CSV LOGS</a></div></body></html>");
+    }
+    if (result == ESP_OK) result = httpd_resp_send_chunk(request, NULL, 0);
+    return result;
+}
+
+static esp_err_t logs_handler(httpd_req_t *request)
+{
+    esp_err_t result = send_page_header(request);
+    if (result == ESP_OK) {
+        result = httpd_resp_sendstr_chunk(
+            request, "<p><a href='/'>BACK TO WI-FI AND FIRMWARE</a></p><h1>CSV logs</h1>");
     }
     if (result != ESP_OK) return result;
+
+    ebike_ota_status_t ota;
+    ebike_ota_get_status(&ota);
+    if (ota.state == EBIKE_OTA_CHECKING || ota.state == EBIKE_OTA_DOWNLOADING ||
+        ota.state == EBIKE_OTA_RESTARTING) {
+        result = httpd_resp_sendstr_chunk(
+            request, "<div class=empty>CSV access pauses during firmware operations.</div></body></html>");
+        if (result == ESP_OK) result = httpd_resp_send_chunk(request, NULL, 0);
+        return result;
+    }
 
     (void)ebike_log_sync();
     const char *active_path = ebike_log_filename();
@@ -526,6 +548,15 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
 
 static esp_err_t download_handler(httpd_req_t *request)
 {
+    ebike_ota_status_t ota;
+    ebike_ota_get_status(&ota);
+    if (ota.state == EBIKE_OTA_CHECKING || ota.state == EBIKE_OTA_DOWNLOADING ||
+        ota.state == EBIKE_OTA_RESTARTING) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_send(request, "CSV access pauses during firmware operations",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
     char query[64];
     char name[20];
     if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK ||
@@ -668,6 +699,11 @@ esp_err_t ebike_wifi_start(ebike_wifi_status_cb_t callback, void *user_data)
         .method = HTTP_GET,
         .handler = index_handler,
     };
+    const httpd_uri_t logs_uri = {
+        .uri = "/logs",
+        .method = HTTP_GET,
+        .handler = logs_handler,
+    };
     const httpd_uri_t download_uri = {
         .uri = "/download",
         .method = HTTP_GET,
@@ -689,6 +725,7 @@ esp_err_t ebike_wifi_start(ebike_wifi_status_cb_t callback, void *user_data)
         .handler = ota_install_handler,
     };
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &index_uri), TAG, "Index route failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &logs_uri), TAG, "Logs route failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &download_uri), TAG, "Download route failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &wifi_uri), TAG, "Wi-Fi route failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &ota_check_uri), TAG, "OTA check route failed");
